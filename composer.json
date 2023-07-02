@@ -1,0 +1,6 @@
+{
+    "require": {
+        "symfony/process": "^6.3",
+        "symfony/var-dumper": "^6.3"
+    }
+}
