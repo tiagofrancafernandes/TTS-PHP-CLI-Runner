@@ -7,8 +7,92 @@ use Symfony\Component\Process\ExecutableFinder;
 
 require_once __DIR__ . '/vendor/autoload.php';
 
+$ARGS = [];
+
+function getServer(?string $key = null, mixed $default = null): mixed
+{
+    global $_SERVER;
+
+    if (is_null($key)) {
+        return $_SERVER ?? [];
+    }
+
+    return $_SERVER[$key] ?? $default;
+}
+
+function getArgType(?string $arg, null|string|int $key = null)
+{
+    $arg = trim(strval($arg));
+
+    if (!$arg || !str_starts_with($arg, '--')) {
+        return [
+            'type' => 'general',
+            'key' => $key,
+            'value' => $arg,
+        ];
+    }
+
+    if (preg_match("/^--.*=/", $arg)) {
+        $_arg = explode('=', $arg, 2);
+
+        return [
+            'type' => 'key-value',
+            'key' => $_arg[0] ?? $key ?? null,
+            'alter_key' => $key ?? $_arg[0] ?? null,
+            'value' => $_arg[1] ?? $arg,
+        ];
+    }
+
+    return [
+        'type' => 'bool',
+        'key' => $arg,
+        'alter_key' => $key,
+        'value' => true,
+    ];
+}
+
+function formatArgs(): void
+{
+    global $argv;
+    global $ARGS;
+
+    $ARGS = [];
+    $ARGS['argv'] = [
+        'type' => 'key-value',
+        'key' => $argv,
+        'alter_key' => '--argv',
+        'value' => $argv,
+    ];
+
+    foreach($argv as $key => $arg) {
+        $argData = getArgType($arg, $key);
+        $key = $argData['key'] ?? $argData['alter_key'] ?? $key;
+        $ARGS[$key] = $argData;
+    }
+}
+
+formatArgs();
+
+function getArgs(): array
+{
+    global $ARGS;
+
+    return $ARGS ?? [];
+}
+
+function getArg(string|int $key, mixed $default = null): mixed
+{
+    return getArgs()[$key]['value'] ?? $default;
+}
+
 $timezone = $_SERVER['TZ'] ?? 'America/Sao_Paulo';
 date_default_timezone_set($timezone);
+
+function getStdin(): string
+{
+    $content = file_get_contents('php://stdin');
+    return trim($content);
+}
 
 function logToFile(...$content)
 {
@@ -32,19 +116,19 @@ function killByPid(int $pid)
 }
 
 function trueOrFalse(
-    $value = null,
+    mixed $value = null,
     ?bool $defaultValue = false,
 ): bool {
     try {
         return match (trim(strtoupper(json_encode($value)), ' \'\"')) {
-            '=VERDADEIRO()', '=TRUE()', 'VERDADEIRO()', 'TRUE()', => true, // excel true values
-            'Y', 'YES', 'V', 'VERDADEIRO', 'S', 'SIM', '1', 'T', 'TRUE', => true,
-            'N', 'NO', 'F', 'FALSO', '', 'NULL', 'NULO', 'NÃO', 'NAO', '0', 'FALSE', => false,
+            '=VERDADEIRO()', '=TRUE()', 'VERDADEIRO()', 'TRUE()' => true, // excel true values
+            'Y', 'YES', 'V', 'VERDADEIRO', 'S', 'SIM', '1', 'T', 'TRUE' => true,
+            'N', 'NO', 'F', 'FALSO', '', 'NULL', 'NULO', 'NÃO', 'NAO', '0', 'FALSE' => false,
             default => $defaultValue,
         }
-            ?? boolval($value);
+            ?? filter_var($value, FILTER_VALIDATE_BOOL);
     } catch (\Exception $e) {
-        return $defaultValue ?? boolval($value);
+        return $defaultValue ?? false;
     }
 }
 
@@ -146,7 +230,7 @@ function run(string $text)
     $execName = 'vlc';
     try {
         if (!($programs[$execName]['paths'] ?? null)) {
-            echo "Invalid program ['{$execName}']" . PHP_EOL;
+            echo verboseMode() ? "Invalid program ['{$execName}']" . PHP_EOL : '';
             return;
         }
 
@@ -173,10 +257,13 @@ function run(string $text)
 
         $text = str_replace(array_keys($replacements), array_values($replacements), $text);
 
+        $locale = getArg('--locale', getServer('TTS_LOCALE', 'en'));
+        $locale = is_string($locale) ? $locale : 'en';
+
         $query = http_build_query([
             'client' => 'gtx',
             'q' => trim("{$text}"),
-            'tl' => 'pt',
+            'tl' => $locale,
             'ttsspeed' => 0.8,
             'tk' => 783660.873733,
             'program_id' => 'speak.php.sh',
@@ -195,7 +282,7 @@ function run(string $text)
 
         $tempDir = sys_get_temp_dir() ?: '/tmp';
 
-        $localFilePath = "{$tempDir}/speak-php-{$fileName}.mp3";
+        $localFilePath = "{$tempDir}/speak-php-{$fileName}-{$locale}.mp3";
 
         if (!is_file($localFilePath)) {
             // file_put_contents($localFilePath, file_get_contents($url));
@@ -228,17 +315,25 @@ function run(string $text)
     }
 }
 
-$text = $_SERVER['TEXT_TO_SAY'] ?? implode(' ', array_slice($argv, 1));
+function verboseMode(): bool
+{
+    return trueOrFalse(getServer('VERBOSE', getArg('--verbose', false)));
+}
+
+$toReadStdin = trueOrFalse($_SERVER['TO_READ_STDIN'] ?? getArg('--stdin'), false);
+
+$text = $toReadStdin ? getStdin() : $_SERVER['TEXT_TO_SAY'] ?? implode(' ', array_slice($argv, 1));
 
 $toEval = $_SERVER['TO_EVAL'] ?? null;
 
 $text = trim("{$text}");
 
 if (!$text && !is_string($toEval)) {
-    die('No text to say' . PHP_EOL);
+    die(verboseMode() ? 'No text to say' . PHP_EOL : '');
 }
 
 $manyTimes = filter_var($_SERVER['MANY_TIMES'] ?? null, FILTER_VALIDATE_INT) ?: null;
+$manyTimes ??= $toReadStdin ? 1 : null;
 
 $manyTimes = is_numeric($manyTimes) ? intval($manyTimes) : null;
 
@@ -246,7 +341,7 @@ $sleepSeconds = $_SERVER['SLEEP'] ?? 300;
 $sleepSeconds = is_numeric($sleepSeconds) && ($sleepSeconds >= 1) ? (int) $sleepSeconds : 300;
 
 $once = trueOrFalse($_SERVER['ONCE'] ?? false, null);
-$toSayCounter = trueOrFalse($_SERVER['TO_SAY_COUNTER'] ?? false, null);
+$toSayCounter = trueOrFalse(getArg('--verbose') ?? $_SERVER['TO_SAY_COUNTER'] ?? false);
 
 $manyTimes = $once ? 1 : $manyTimes;
 
@@ -257,12 +352,14 @@ while (true) {
         eval("\$text = {$toEval};");
     }
 
-    // echo json_encode($text, 64) . PHP_EOL;
     $runCounter++;
 
-    echo "Run counter: {$runCounter}" . (
-        $manyTimes ? " of {$manyTimes} " : ""
-    ) . PHP_EOL;
+    if (verboseMode()) {
+        echo json_encode($text, 64) . PHP_EOL;
+        echo "Run counter: {$runCounter}" . (
+            $manyTimes ? " of {$manyTimes} " : ""
+        ) . PHP_EOL;
+    }
 
     run($text);
 
@@ -274,8 +371,9 @@ while (true) {
         break;
     }
 
-    echo PHP_EOL;
-    echo "Sleeping for {$sleepSeconds} seconds" . PHP_EOL;
+    if (verboseMode()) {
+        echo PHP_EOL . "Sleeping for {$sleepSeconds} seconds" . PHP_EOL;
+    }
 
     sleep($sleepSeconds);
 }
