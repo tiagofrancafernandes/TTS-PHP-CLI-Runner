@@ -47,6 +47,11 @@ O loop conta as execuções usando `runCounter` e encerra quando atinge `MANY_TI
 - `--one-instance`: ativa/desativa `--one-instance` no `cvlc` (por padrão, desativado).
 - `--stdin`: reconhecido mas o script já lê stdin de forma não bloqueante mesmo sem esse flag.
 
+## Testes
+
+- `composer install` (pré-requisito para `phpunit`).
+- `composer test` ou `vendor/bin/phpunit` executa os testes auxiliares em `tests/`.
+
 ## Observações
 
 - Os MP3s ficam em `sys_get_temp_dir()` com nome limpo e recebem permissão `777`.

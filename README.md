@@ -49,6 +49,11 @@ When the loop is enabled, the script increments `run` and stops once `MANY_TIMES
 - `--one-instance`: toggles `cvlc`'s `--one-instance` flag (defaults to `false`).
 - `--stdin`: currently ignored because stdin reading already runs unconditionally.
 
+## Testing
+
+- `composer install` (already required for the runtime helpers) installs PHPUnit.
+- `composer test` or `vendor/bin/phpunit` executes the helper tests defined in `tests/`.
+
 ## Notes
 
 - The script caches the mp3 in `sys_get_temp_dir()` with a sanitized file name and sets permissions to `777` for reuse.
