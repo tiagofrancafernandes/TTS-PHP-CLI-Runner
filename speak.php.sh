@@ -8,6 +8,32 @@ use Symfony\Component\Process\ExecutableFinder;
 require_once __DIR__ . '/vendor/autoload.php';
 
 $ARGS = [];
+$_SERVER = array_merge(
+    $_SERVER ?? [],
+    getenv() ?: [],
+);
+
+function array_map_with_keys(array $array, \Closure $mapFunction): array
+{
+    $newArray = [];
+    foreach ($array as $key => $value) {
+        $result = $mapFunction($key, $value);
+        $result = is_array($result) ? $result : [];
+        $newArray[] = [
+            array_is_list($result) ? $key : array_key_first($result),
+            $result[array_is_list($result) ? 0 : array_key_first($result)] ?? null
+        ];
+    }
+
+    foreach ($newArray as $_key => $item) {
+        [$key, $value] = $item;
+
+        unset($newArray[$_key]);
+        $newArray[$key] = $value;
+    }
+
+    return (array) $newArray;
+}
 
 function getServer(?string $key = null, mixed $default = null): mixed
 {
@@ -64,7 +90,7 @@ function formatArgs(): void
         'value' => $argv,
     ];
 
-    foreach($argv as $key => $arg) {
+    foreach ($argv as $key => $arg) {
         $argData = getArgType($arg, $key);
         $key = $argData['key'] ?? $argData['alter_key'] ?? $key;
         $ARGS[$key] = $argData;
@@ -88,9 +114,28 @@ function getArg(string|int $key, mixed $default = null): mixed
 $timezone = $_SERVER['TZ'] ?? 'America/Sao_Paulo';
 date_default_timezone_set($timezone);
 
+function readStdinNonBlocking(): ?string
+{
+    if (function_exists('posix_isatty') && posix_isatty(STDIN)) {
+        return null;
+    }
+
+    stream_set_blocking(STDIN, false);
+
+    $read = [STDIN];
+    $write = null;
+    $except = null;
+
+    if (stream_select($read, $write, $except, 0, 200000) === 0) {
+        return null;
+    }
+
+    return stream_get_contents(STDIN);
+}
+
 function getStdin(): string
 {
-    $content = file_get_contents('php://stdin');
+    $content = readStdinNonBlocking() ?: '';
     return trim($content);
 }
 
@@ -106,7 +151,7 @@ function logToFile(...$content)
 function killByPid(int $pid)
 {
     try {
-        $process = new Process(['kill', '-9',  $pid]);
+        $process = new Process(['kill', '-9', $pid]);
         $process->run();
 
         return $process->stop(7, SIGINT);
@@ -124,6 +169,7 @@ function trueOrFalse(
             '=VERDADEIRO()', '=TRUE()', 'VERDADEIRO()', 'TRUE()' => true, // excel true values
             'Y', 'YES', 'V', 'VERDADEIRO', 'S', 'SIM', '1', 'T', 'TRUE' => true,
             'N', 'NO', 'F', 'FALSO', '', 'NULL', 'NULO', 'NÃO', 'NAO', '0', 'FALSE' => false,
+            '!Y', '!YES', '!V', '!VERDADEIRO', '!S', '!SIM', '!1', '!T', '!TRUE' => false,
             default => $defaultValue,
         }
             ?? filter_var($value, FILTER_VALIDATE_BOOL);
@@ -180,10 +226,17 @@ function closeOtherInstances(string $searchBy = '')
 function downloadTo(string $url, string $to)
 {
     $ch = curl_init();
+
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+
     $fileData = curl_exec($ch);
-    curl_close($ch);
+
+    ## curl_close is deprecated since PHP 8.5
+    if (PHP_VERSION_ID < 80500) {
+        /** @suppress PHP6403 */
+        curl_close($ch);
+    }
 
     $fp = fopen($to, 'w');
     fwrite($fp, $fileData);
@@ -194,6 +247,28 @@ function downloadTo(string $url, string $to)
 
 function run(string $text)
 {
+    $oneInstance = trueOrFalse(getArg('--one-instance', getServer('ONE_INSTANCE', false)));
+    $params = [
+        '--advanced',
+        '--one-instance' => !$oneInstance,
+        '--play-and-exit',
+        '--no-start-paused',
+        '--no-repeat',
+        '--no-loop',
+        '--no-random',
+        '--no-autoscale',
+        '--no-video-on-top',
+        '--no-keyboard-events',
+        '--no-fullscreen',
+        '--no-video',
+        '--no-mouse-events',
+    ];
+
+    $params = array_keys(array_filter(array_map_with_keys($params, function ($key, $value) {
+        $nkey = is_integer($key) && is_string($value) ? $value : $key;
+        return [$nkey => $value];
+    })));
+
     $programs = [
         'vlc' => [
             'paths' => [
@@ -201,21 +276,7 @@ function run(string $text)
                 'default' => '/usr/bin/cvlc',
                 'extraDirs' => [],
             ],
-            'params' => [
-                '--advanced',
-                '--one-instance',
-                '--play-and-exit',
-                '--no-start-paused',
-                '--no-repeat',
-                '--no-loop',
-                '--no-random',
-                '--no-autoscale',
-                '--no-video-on-top',
-                '--no-keyboard-events',
-                '--no-fullscreen',
-                '--no-video',
-                '--no-mouse-events',
-            ],
+            'params' => $params,
         ],
         'carbonyl' => [
             'paths' => [
@@ -257,14 +318,29 @@ function run(string $text)
 
         $text = str_replace(array_keys($replacements), array_values($replacements), $text);
 
-        $locale = getArg('--locale', getServer('TTS_LOCALE', 'en'));
+        $getSpeed = function ($value) {
+            $value = is_numeric($value) ? floatval($value) : 1.0;
+            return $value >= 0 && $value <= 1 ? floatval($value) : 1.0;
+        };
+
+        $speed = $getSpeed(getArg('--speed', getServer('TTS_SPEED', 1.0)));
+
+        $locale = getArg('--locale', null);
+
+        if (!$locale || !is_string($locale)) {
+            $_tmp_srv = getServer();
+            $locale = $_tmp_srv['TTS_LOCALE'] ?? $_tmp_srv['LC_ALL'] ?? $_tmp_srv['LANGUAGE'] ?? 'en';
+            $locale = explode('.', trim($locale), 2)[0] ?? null;
+            unset($_tmp_srv);
+        }
+
         $locale = is_string($locale) ? $locale : 'en';
 
         $query = http_build_query([
             'client' => 'gtx',
             'q' => trim("{$text}"),
             'tl' => $locale,
-            'ttsspeed' => 0.8,
+            'ttsspeed' => $speed,
             'tk' => 783660.873733,
             'program_id' => 'speak.php.sh',
         ]);
@@ -272,12 +348,18 @@ function run(string $text)
         $url = "{$baseUrl}?{$query}";
 
         // $fileName = md5($url);
-        $fileName = str_replace([
-            PHP_EOL,
-            ' ', '_',
-            '.', ',', ';', ':',
-        ],
-            '-', trim($text)
+        $fileName = str_replace(
+            [
+                PHP_EOL,
+                ' ',
+                '_',
+                '.',
+                ',',
+                ';',
+                ':',
+            ],
+            '-',
+            trim($text)
         );
 
         $tempDir = sys_get_temp_dir() ?: '/tmp';
@@ -322,7 +404,12 @@ function verboseMode(): bool
 
 $toReadStdin = trueOrFalse($_SERVER['TO_READ_STDIN'] ?? getArg('--stdin'), false);
 
-$text = $toReadStdin ? getStdin() : $_SERVER['TEXT_TO_SAY'] ?? implode(' ', array_slice($argv, 1));
+// $text = $toReadStdin ? getStdin() : $_SERVER['TEXT_TO_SAY'] ?? readStdinNonBlocking() ?? implode(
+//     ' ',
+//     array_slice($argv, 1)
+// );
+
+$text = readStdinNonBlocking();
 
 $toEval = $_SERVER['TO_EVAL'] ?? null;
 
@@ -338,9 +425,9 @@ $manyTimes ??= $toReadStdin ? 1 : null;
 $manyTimes = is_numeric($manyTimes) ? intval($manyTimes) : null;
 
 $sleepSeconds = $_SERVER['SLEEP'] ?? 300;
-$sleepSeconds = is_numeric($sleepSeconds) && ($sleepSeconds >= 1) ? (int) $sleepSeconds : 300;
+$sleepSeconds = is_numeric($sleepSeconds) && boolval($sleepSeconds >= 1) ? (int) $sleepSeconds : 300;
 
-$once = trueOrFalse($_SERVER['ONCE'] ?? false, null);
+$once = trueOrFalse($_SERVER['ONCE'] ?? getArg('--once') ?? false, null);
 $toSayCounter = trueOrFalse(getArg('--verbose') ?? $_SERVER['TO_SAY_COUNTER'] ?? false);
 
 $manyTimes = $once ? 1 : $manyTimes;
@@ -349,7 +436,7 @@ $runCounter = 0;
 
 while (true) {
     if (is_string($toEval)) {
-        eval("\$text = {$toEval};");
+        eval ("\$text = {$toEval};");
     }
 
     $runCounter++;
