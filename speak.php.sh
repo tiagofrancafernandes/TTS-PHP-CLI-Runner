@@ -402,65 +402,71 @@ function verboseMode(): bool
     return trueOrFalse(getServer('VERBOSE', getArg('--verbose', false)));
 }
 
-$toReadStdin = trueOrFalse($_SERVER['TO_READ_STDIN'] ?? getArg('--stdin'), false);
+function main(): void
+{
+    $toReadStdin = trueOrFalse($_SERVER['TO_READ_STDIN'] ?? getArg('--stdin'), false);
 
-// $text = $toReadStdin ? getStdin() : $_SERVER['TEXT_TO_SAY'] ?? readStdinNonBlocking() ?? implode(
-//     ' ',
-//     array_slice($argv, 1)
-// );
+    // $text = $toReadStdin ? getStdin() : $_SERVER['TEXT_TO_SAY'] ?? readStdinNonBlocking() ?? implode(
+    //     ' ',
+    //     array_slice($argv, 1)
+    // );
+    $text = readStdinNonBlocking();
 
-$text = readStdinNonBlocking();
+    $toEval = $_SERVER['TO_EVAL'] ?? null;
 
-$toEval = $_SERVER['TO_EVAL'] ?? null;
+    $text = trim("{$text}");
 
-$text = trim("{$text}");
+    if (!$text && !is_string($toEval)) {
+        die(verboseMode() ? 'No text to say' . PHP_EOL : '');
+    }
 
-if (!$text && !is_string($toEval)) {
-    die(verboseMode() ? 'No text to say' . PHP_EOL : '');
+    $manyTimes = filter_var($_SERVER['MANY_TIMES'] ?? null, FILTER_VALIDATE_INT) ?: null;
+    $manyTimes ??= $toReadStdin ? 1 : null;
+
+    $manyTimes = is_numeric($manyTimes) ? intval($manyTimes) : null;
+
+    $sleepSeconds = $_SERVER['SLEEP'] ?? 300;
+    $sleepSeconds = is_numeric($sleepSeconds) && boolval($sleepSeconds >= 1) ? (int) $sleepSeconds : 300;
+
+    $once = trueOrFalse($_SERVER['ONCE'] ?? getArg('--once') ?? false, null);
+    $toSayCounter = trueOrFalse(getArg('--verbose') ?? $_SERVER['TO_SAY_COUNTER'] ?? false);
+
+    $manyTimes = $once ? 1 : $manyTimes;
+
+    $runCounter = 0;
+
+    while (true) {
+        if (is_string($toEval)) {
+            eval ("\$text = {$toEval};");
+        }
+
+        $runCounter++;
+
+        if (verboseMode()) {
+            echo json_encode($text, 64) . PHP_EOL;
+            echo "Run counter: {$runCounter}" . (
+                $manyTimes ? " of {$manyTimes} " : ""
+            ) . PHP_EOL;
+        }
+
+        run($text);
+
+        if ($toSayCounter) {
+            run("Contador em {$runCounter}");
+        }
+
+        if ($manyTimes && ($runCounter >= $manyTimes)) {
+            break;
+        }
+
+        if (verboseMode()) {
+            echo PHP_EOL . "Sleeping for {$sleepSeconds} seconds" . PHP_EOL;
+        }
+
+        sleep($sleepSeconds);
+    }
 }
 
-$manyTimes = filter_var($_SERVER['MANY_TIMES'] ?? null, FILTER_VALIDATE_INT) ?: null;
-$manyTimes ??= $toReadStdin ? 1 : null;
-
-$manyTimes = is_numeric($manyTimes) ? intval($manyTimes) : null;
-
-$sleepSeconds = $_SERVER['SLEEP'] ?? 300;
-$sleepSeconds = is_numeric($sleepSeconds) && boolval($sleepSeconds >= 1) ? (int) $sleepSeconds : 300;
-
-$once = trueOrFalse($_SERVER['ONCE'] ?? getArg('--once') ?? false, null);
-$toSayCounter = trueOrFalse(getArg('--verbose') ?? $_SERVER['TO_SAY_COUNTER'] ?? false);
-
-$manyTimes = $once ? 1 : $manyTimes;
-
-$runCounter = 0;
-
-while (true) {
-    if (is_string($toEval)) {
-        eval ("\$text = {$toEval};");
-    }
-
-    $runCounter++;
-
-    if (verboseMode()) {
-        echo json_encode($text, 64) . PHP_EOL;
-        echo "Run counter: {$runCounter}" . (
-            $manyTimes ? " of {$manyTimes} " : ""
-        ) . PHP_EOL;
-    }
-
-    run($text);
-
-    if ($toSayCounter) {
-        run("Contador em {$runCounter}");
-    }
-
-    if ($manyTimes && ($runCounter >= $manyTimes)) {
-        break;
-    }
-
-    if (verboseMode()) {
-        echo PHP_EOL . "Sleeping for {$sleepSeconds} seconds" . PHP_EOL;
-    }
-
-    sleep($sleepSeconds);
+if (!defined('SPEAK_PHP_SH_TEST_MODE')) {
+    main();
 }
